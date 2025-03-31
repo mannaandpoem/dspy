@@ -1,4 +1,6 @@
 import dspy
+import json
+import os
 from bbh import read_jsonl_bbh, calculate_score_bbh  # 从 bbh.py 导入相关功能
 from dspy.evaluate import Evaluate
 from dspy.teleprompt import MIPROv2
@@ -20,13 +22,10 @@ class SimpleBBHQA(dspy.Module):
     def __init__(self):
         super().__init__()
         self.generate_answer = dspy.ChainOfThought("question -> answer")
-        self.total_cost = 0.0  # 用于累计成本
 
     def forward(self, question):
         prediction = self.generate_answer(question=question)
-        # 从语言模型的最后一次调用中获取成本（如果支持）
-        cost = dspy.settings.lm.last_call_cost if hasattr(dspy.settings.lm, 'last_call_cost') else 0.0
-        self.total_cost += cost
+        # 确保输出格式与 BBH 评估兼容（提取纯文本答案）
         return dspy.Prediction(answer=prediction.answer)
 
 
@@ -48,15 +47,7 @@ def bbh_exact_match_metric(example, pred, trace=None):
     score, _ = calculate_score_bbh(ground_truth=example.answer, prediction=pred.answer)
     return score
 
-
-# 自定义评估函数以记录成本
-# evaluate = Evaluate(devset=valset, metric=bbh_exact_match_metric, num_threads=4, display_progress=True)
-def evaluate_with_cost(program, devset, metric):
-    evaluator = Evaluate(devset=devset, metric=metric, num_threads=4, display_progress=True)
-    score = evaluator(program)
-    total_cost = program.total_cost  # 从程序实例中获取累计成本
-    return score, total_cost
-
+evaluate = Evaluate(devset=valset, metric=bbh_exact_match_metric, num_threads=4, display_progress=True)
 
 # 5. 初始化程序
 program = SimpleBBHQA()
@@ -73,6 +64,15 @@ teleprompter = MIPROv2(
 
 # teleprompter.auto = None  # auto: Optional[Literal["light", "medium", "heavy"]] = "medium"
 teleprompter.auto = "light"  # auto: Optional[Literal["light", "medium", "heavy"]] = "medium"
+# ==> STEP 1: BOOTSTRAP FEWSHOT EXAMPLES <==
+# 在 compile 方法中，MIPROv2 首先通过 _bootstrap_fewshot_examples 方法生成少样本示例（few-shot examples），
+# 这些示例将用于后续的指令生成和优化。
+# ==> STEP 2: PROPOSE INSTRUCTION CANDIDATES <==
+# 接着，MIPROv2 调用 _propose_instructions 方法，利用 prompt_model 生成一组指令候选（instruction candidates），
+# 这些候选基于训练数据和生成的少样本示例。
+# ==> STEP 3: FINDING OPTIMAL PROMPT PARAMETERS <==
+# 最后，MIPROv2 通过 _optimize_prompt_parameters 方法，使用 task_model 在验证集上评估不同指令和示例组合，
+# 并通过贝叶斯优化找到最优的参数组合。
 optimized_program = teleprompter.compile(
     program,
     trainset=trainset,
@@ -85,14 +85,35 @@ optimized_program = teleprompter.compile(
 )
 
 # 7. 评估优化前后的程序
-# baseline_score = evaluate(program)
-# optimized_score = evaluate(optimized_program)
-# 7. 评估优化前后的程序并记录成本
-baseline_score, baseline_cost = evaluate_with_cost(program, valset, bbh_exact_match_metric)
-optimized_score, optimized_cost = evaluate_with_cost(optimized_program, valset, bbh_exact_match_metric)
+baseline_score = evaluate(program)
+optimized_score = evaluate(optimized_program)
 
 print(f"Baseline Score: {baseline_score}")
 print(f"Optimized Score: {optimized_score}")
 
 # 8. 保存优化后的程序
 optimized_program.save("optimized_bbh_program", save_program=True)
+
+# 9. 保存语言模型历史记录到 JSON 文件
+def save_lm_history(lm, filename):
+    """将语言模型的历史记录保存到 JSON 文件"""
+    if not os.path.exists("lm_history"):
+        os.makedirs("lm_history")
+    
+    history = lm.history
+    if history:
+        filepath = os.path.join("lm_history", f"{filename}.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        print(f"保存语言模型历史记录到: {filepath}")
+    else:
+        print(f"警告: {filename} 没有历史记录可保存")
+
+# 保存两个语言模型的历史记录
+save_lm_history(prompt_lm, "prompt_lm_history")
+save_lm_history(task_lm, "task_lm_history")
+
+# 如果希望在实验中途也保存历史记录，可以在关键步骤后添加保存操作
+# 例如，在优化前后分别保存一次:
+# save_lm_history(task_lm, "task_lm_before_optimization")
+# save_lm_history(task_lm, "task_lm_after_optimization")
