@@ -1,7 +1,9 @@
-import dspy
 import json
 import os
+
+import dspy
 from bbh import read_jsonl_bbh, calculate_score_bbh  # 从 bbh.py 导入相关功能
+from dspy.clients.base_lm import GLOBAL_HISTORY
 from dspy.evaluate import Evaluate
 from dspy.teleprompt import MIPROv2
 
@@ -46,6 +48,7 @@ valset = [dspy.Example(question=x["question"], answer=x["answer"]).with_inputs('
 def bbh_exact_match_metric(example, pred, trace=None):
     score, _ = calculate_score_bbh(ground_truth=example.answer, prediction=pred.answer)
     return score
+
 
 evaluate = Evaluate(devset=valset, metric=bbh_exact_match_metric, num_threads=4, display_progress=True)
 
@@ -94,26 +97,65 @@ print(f"Optimized Score: {optimized_score}")
 # 8. 保存优化后的程序
 optimized_program.save("optimized_bbh_program", save_program=True)
 
+
 # 9. 保存语言模型历史记录到 JSON 文件
-def save_lm_history(lm, filename):
-    """将语言模型的历史记录保存到 JSON 文件"""
+def save_lm_history(filename):
+    """将全局LM历史记录保存到 JSON 文件，重点关注 usage 和 cost 信息"""
     if not os.path.exists("lm_history"):
         os.makedirs("lm_history")
-    
-    history = lm.history
+
+    # 使用 dspy 的全局历史记录
+    history = GLOBAL_HISTORY
+
     if history:
+        # 创建可序列化的历史记录列表，专注于 usage 和 cost
+        serializable_history = []
+        for entry in history:
+            # 处理 usage 字段：确保它是基本数据类型
+            usage_dict = {}
+            if "usage" in entry and entry["usage"]:
+                usage = entry["usage"]
+                if hasattr(usage, "items"):  # 如果是类字典对象
+                    for k, v in usage.items():
+                        usage_dict[k] = str(v) if not isinstance(v, (int, float, str, bool, type(None))) else v
+                else:
+                    usage_dict = {"info": str(usage)}
+
+            # 创建安全的条目字典
+            simplified_entry = {
+                "timestamp": str(entry.get("timestamp", "")),
+                "model": str(entry.get("model", "")),
+                "response_model": str(entry.get("response_model", "")),
+                "uuid": str(entry.get("uuid", "")),
+                "usage": usage_dict,
+                "cost": float(entry.get("cost", 0)) if entry.get("cost") is not None else None,
+                "prompt_brief": str(entry.get("prompt", ""))[:100] + "..." if len(
+                    str(entry.get("prompt", ""))) > 100 else str(entry.get("prompt", "")),
+            }
+            serializable_history.append(simplified_entry)
+
         filepath = os.path.join("lm_history", f"{filename}.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        print(f"保存语言模型历史记录到: {filepath}")
+
+        # 使用更安全的方式进行序列化
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(serializable_history, f, ensure_ascii=False, indent=2)
+            print(f"保存语言模型历史记录到: {filepath}, 包含 {len(serializable_history)} 条记录")
+        except TypeError as e:
+            print(f"错误: 序列化失败 - {e}")
+            # 尝试更简单的方法 - 进一步简化记录
+            basic_history = []
+            for entry in serializable_history:
+                basic_entry = {k: str(v) for k, v in entry.items()}
+                basic_history.append(basic_entry)
+
+            # 使用最基本的字符串表示保存
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(basic_history, f, ensure_ascii=False, indent=2)
+            print(f"已使用基本字符串表示保存历史记录")
     else:
-        print(f"警告: {filename} 没有历史记录可保存")
+        print(f"警告: 全局历史记录为空，没有历史记录可保存")
 
-# 保存两个语言模型的历史记录
-save_lm_history(prompt_lm, "prompt_lm_history")
-save_lm_history(task_lm, "task_lm_history")
 
-# 如果希望在实验中途也保存历史记录，可以在关键步骤后添加保存操作
-# 例如，在优化前后分别保存一次:
-# save_lm_history(task_lm, "task_lm_before_optimization")
-# save_lm_history(task_lm, "task_lm_after_optimization")
+# 保存全局历史记录，专注于 usage 和 cost 信息
+save_lm_history("dspy_global_history")
