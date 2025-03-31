@@ -50,6 +50,8 @@ teleprompter = MIPROv2(
     verbose=True
 )
 
+teleprompter.auto = None    # auto: Optional[Literal["light", "medium", "heavy"]] = "medium"
+
 # ==> STEP 1: BOOTSTRAP FEWSHOT EXAMPLES <==
 # 在 compile 方法中，MIPROv2 首先通过 _bootstrap_fewshot_examples 方法生成少样本示例（few-shot examples），
 # 这些示例将用于后续的指令生成和优化。
