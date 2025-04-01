@@ -94,8 +94,8 @@ optimized_score = evaluate(optimized_program)
 print(f"Baseline Score: {baseline_score}")
 print(f"Optimized Score: {optimized_score}")
 
+
 # 8. 保存优化后的程序
-optimized_program.save("experiment_results/optimized_bbh_program.json")
 
 
 # 9. 保存语言模型历史记录和实验结果
@@ -187,7 +187,7 @@ def save_lm_history(lm, filename, output_dir):
 
 
 def save_experiment_results():
-    """保存实验结果，包括各个语言模型的历史记录和评分"""
+    """保存实验结果，包括各个语言模型的历史记录、评分和优化试验日志"""
     # 创建输出目录
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = os.path.join("experiment_results", f"bbh_experiment_{timestamp}")
@@ -209,6 +209,42 @@ def save_experiment_results():
             "task_lm": task_saved
         }
     }
+
+    # 保存优化程序的trial_logs
+    if hasattr(optimized_program, "trial_logs") and isinstance(optimized_program.trial_logs, dict):
+        try:
+            # 将trial_logs保存为单独的文件，因为它可能很大
+            trial_logs_path = os.path.join(output_dir, "trial_logs.json")
+
+            # 创建trial_logs的可序列化副本
+            serializable_logs = safe_serializable(optimized_program.trial_logs)
+
+            with open(trial_logs_path, "w", encoding="utf-8") as f:
+                json.dump(serializable_logs, f, ensure_ascii=False, indent=2)
+
+            print(f"已保存试验日志到: {trial_logs_path}")
+            results["trial_logs_saved"] = True
+            results["trial_logs_path"] = trial_logs_path
+        except Exception as e:
+            print(f"保存试验日志时出错: {e}")
+            results["trial_logs_error"] = str(e)
+
+            # 尝试保存trial_logs的基本信息
+            try:
+                # 只保存键和值类型
+                basic_logs = {}
+                for key, value in optimized_program.trial_logs.items():
+                    if isinstance(value, dict):
+                        basic_logs[key] = {k: str(type(v)) for k, v in value.items()}
+                    else:
+                        basic_logs[key] = str(type(value))
+
+                results["trial_logs_basic_info"] = basic_logs
+                print("已保存试验日志的基本结构信息")
+            except:
+                results["trial_logs_basic_info_error"] = "无法提取基本结构信息"
+    else:
+        results["trial_logs_available"] = False
 
     # 更安全地检查和提取优化后的指令和示例
     try:
