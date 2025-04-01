@@ -95,7 +95,7 @@ print(f"Baseline Score: {baseline_score}")
 print(f"Optimized Score: {optimized_score}")
 
 # 8. 保存优化后的程序
-optimized_program.save("optimized_bbh_program", save_program=True)
+optimized_program.save("experiment_results/optimized_bbh_program.json")
 
 
 # 9. 保存语言模型历史记录和实验结果
