@@ -65,7 +65,7 @@ def calculate_score_bbh(ground_truth: str, prediction: str) -> Tuple[float, str]
     Compute exact match score between prediction and ground truth answers.
     Score is 1.0 if strings match exactly after normalization, 0.0 otherwise.
     """
-    prediction = extract_content(xml_string=prediction, tag="answer")
+    # prediction = extract_content(xml_string=prediction, tag="answer")
     return (1.0 if normalize_answer(prediction) == normalize_answer(ground_truth) else 0.0, prediction)
 
 

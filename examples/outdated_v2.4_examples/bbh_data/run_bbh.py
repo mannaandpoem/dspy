@@ -1,9 +1,9 @@
+import datetime
 import json
 import os
 
 import dspy
 from bbh import read_jsonl_bbh, calculate_score_bbh  # 从 bbh.py 导入相关功能
-from dspy.clients.base_lm import GLOBAL_HISTORY
 from dspy.evaluate import Evaluate
 from dspy.teleprompt import MIPROv2
 
@@ -98,64 +98,169 @@ print(f"Optimized Score: {optimized_score}")
 optimized_program.save("optimized_bbh_program", save_program=True)
 
 
-# 9. 保存语言模型历史记录到 JSON 文件
-def save_lm_history(filename):
-    """将全局LM历史记录保存到 JSON 文件，重点关注 usage 和 cost 信息"""
-    if not os.path.exists("lm_history"):
-        os.makedirs("lm_history")
+# 9. 保存语言模型历史记录和实验结果
+def safe_serializable(obj):
+    """将对象转换为安全可序列化的形式"""
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    elif isinstance(obj, list):
+        return [safe_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {str(k): safe_serializable(v) for k, v in obj.items() if k != 'response'}
+    else:
+        return str(obj)
 
-    # 使用 dspy 的全局历史记录
-    history = GLOBAL_HISTORY
 
-    if history:
-        # 创建可序列化的历史记录列表，专注于 usage 和 cost
-        serializable_history = []
-        for entry in history:
-            # 处理 usage 字段：确保它是基本数据类型
-            usage_dict = {}
-            if "usage" in entry and entry["usage"]:
-                usage = entry["usage"]
-                if hasattr(usage, "items"):  # 如果是类字典对象
-                    for k, v in usage.items():
-                        usage_dict[k] = str(v) if not isinstance(v, (int, float, str, bool, type(None))) else v
-                else:
-                    usage_dict = {"info": str(usage)}
+def extract_usage_info(history_entry):
+    """从历史记录条目中提取使用信息"""
+    usage_info = {}
+    if "usage" in history_entry and history_entry["usage"]:
+        usage = history_entry["usage"]
+        # 处理不同类型的usage对象
+        if hasattr(usage, "get"):
+            usage_info = {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0)
+            }
+        else:
+            # 回退到字符串表示
+            usage_info = {"info": str(usage)}
 
-            # 创建安全的条目字典
-            simplified_entry = {
+    return usage_info
+
+
+def save_lm_history(lm, filename, output_dir):
+    """保存单个语言模型的历史记录"""
+    if not hasattr(lm, 'history') or not lm.history:
+        print(f"警告: {filename} 没有历史记录可保存")
+        return False
+
+    try:
+        # 提取关键信息，特别是usage和cost
+        simplified_history = []
+        for entry in lm.history:
+            # 提取基本信息
+            entry_info = {
                 "timestamp": str(entry.get("timestamp", "")),
                 "model": str(entry.get("model", "")),
-                "response_model": str(entry.get("response_model", "")),
                 "uuid": str(entry.get("uuid", "")),
-                "usage": usage_dict,
-                "cost": float(entry.get("cost", 0)) if entry.get("cost") is not None else None,
-                "prompt_brief": str(entry.get("prompt", ""))[:100] + "..." if len(
-                    str(entry.get("prompt", ""))) > 100 else str(entry.get("prompt", "")),
+                "usage": extract_usage_info(entry),
+                "cost": entry.get("cost")
             }
-            serializable_history.append(simplified_entry)
 
-        filepath = os.path.join("lm_history", f"{filename}.json")
+            # 添加少量上下文信息
+            if "prompt" in entry:
+                prompt_str = str(entry["prompt"])
+                entry_info["prompt"] = prompt_str
 
-        # 使用更安全的方式进行序列化
+            # 添加输出的简要信息
+            if "outputs" in entry and entry["outputs"]:
+                outputs = entry["outputs"]
+                if isinstance(outputs, list) and outputs:
+                    output_str = str(outputs[0])
+                    entry_info["outputs"] = output_str
+
+            simplified_history.append(entry_info)
+
+        # 保存到文件
+        filepath = os.path.join(output_dir, f"{filename}.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(simplified_history, f, ensure_ascii=False, indent=2)
+
+        print(f"成功保存 {len(simplified_history)} 条历史记录到: {filepath}")
+        return True
+    except Exception as e:
+        print(f"保存 {filename} 时出错: {e}")
+
+        # 尝试更简单的方法 - 只保存字符串表示
         try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(serializable_history, f, ensure_ascii=False, indent=2)
-            print(f"保存语言模型历史记录到: {filepath}, 包含 {len(serializable_history)} 条记录")
-        except TypeError as e:
-            print(f"错误: 序列化失败 - {e}")
-            # 尝试更简单的方法 - 进一步简化记录
-            basic_history = []
-            for entry in serializable_history:
-                basic_entry = {k: str(v) for k, v in entry.items()}
-                basic_history.append(basic_entry)
-
-            # 使用最基本的字符串表示保存
+            basic_history = [{"entry": str(entry)} for entry in lm.history]
+            filepath = os.path.join(output_dir, f"{filename}_basic.json")
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(basic_history, f, ensure_ascii=False, indent=2)
-            print(f"已使用基本字符串表示保存历史记录")
-    else:
-        print(f"警告: 全局历史记录为空，没有历史记录可保存")
+            print(f"已使用基本字符串表示保存历史记录到: {filepath}")
+            return True
+        except Exception as e2:
+            print(f"基本保存也失败: {e2}")
+            return False
 
 
-# 保存全局历史记录，专注于 usage 和 cost 信息
-save_lm_history("dspy_global_history")
+def save_experiment_results():
+    """保存实验结果，包括各个语言模型的历史记录和评分"""
+    # 创建输出目录
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join("experiment_results", f"bbh_experiment_{timestamp}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 保存prompt_lm和task_lm的历史记录
+    prompt_saved = save_lm_history(prompt_lm, "prompt_lm_history", output_dir)
+    task_saved = save_lm_history(task_lm, "task_lm_history", output_dir)
+
+    # 保存实验结果摘要
+    results = {
+        "timestamp": timestamp,
+        "baseline_score": float(baseline_score),
+        "optimized_score": float(optimized_score),
+        "prompt_lm_model": str(prompt_lm.model),
+        "task_lm_model": str(task_lm.model),
+        "history_saved": {
+            "prompt_lm": prompt_saved,
+            "task_lm": task_saved
+        }
+    }
+
+    # 更安全地检查和提取优化后的指令和示例
+    try:
+        # 检查MIPROv2优化后的程序结构
+        optimized_info = {}
+
+        # 检查是否有指令（多种可能的位置）
+        if hasattr(optimized_program, "generate_answer"):
+            # 直接获取生成答案组件
+            cot = optimized_program.generate_answer
+
+            # 检查不同可能的属性路径
+            if hasattr(cot, "predictor"):
+                predictor = cot.predictor
+                if hasattr(predictor, "instruction"):
+                    optimized_info["instruction"] = predictor.instruction
+                if hasattr(predictor, "demos"):
+                    optimized_info["has_demos"] = True
+                    optimized_info["demo_count"] = len(predictor.demos)
+
+            # 也可能直接在ChainOfThought上
+            elif hasattr(cot, "instruction"):
+                optimized_info["instruction"] = cot.instruction
+
+            # 可能在模块属性中
+            elif hasattr(cot, "__dict__"):
+                for key, value in cot.__dict__.items():
+                    if "instruction" in key.lower() and isinstance(value, str):
+                        optimized_info[f"instruction_in_{key}"] = value
+                    if "demo" in key.lower():
+                        optimized_info[f"demos_in_{key}"] = str(type(value))
+
+        # 如果能获取到teleprompter信息
+        if hasattr(teleprompter, "best_instruction"):
+            optimized_info["best_instruction"] = teleprompter.best_instruction
+
+        # 保存找到的所有优化信息
+        if optimized_info:
+            results["optimized_program_info"] = optimized_info
+    except Exception as e:
+        # 如果提取过程中出错，记录错误但继续
+        results["optimized_program_info_error"] = str(e)
+
+    # 保存结果摘要
+    results_path = os.path.join(output_dir, "experiment_summary.json")
+    with open(results_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+    print(f"已保存实验结果摘要到: {results_path}")
+    return output_dir
+
+
+# 执行保存
+output_dir = save_experiment_results()
+print(f"实验数据已保存到: {output_dir}")
